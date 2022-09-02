@@ -1,0 +1,42 @@
+alter table badges add primary key (id);
+alter table comments add primary key (id);
+alter table post_links add primary key (id);
+alter table posts add primary key (id);
+alter table tags add primary key (id);
+alter table users add primary key (id);
+alter table votes add primary key (id);
+
+create index on badges (user_id);
+create index on comments (post_id);
+create index on comments (user_id);
+create index on post_links (post_id);
+create index on post_links (related_post_id);
+create index on posts (accepted_answer_id);
+create index on posts (parent_id);
+create index on posts (owner_user_id);
+create index on posts (last_editor_user_id);
+create index on tags (excerpt_post_id);
+create index on tags (wiki_post_id);
+create index on votes (post_id);
+create index on votes (user_id);
+
+delete from badges where id in (select b.id from badges b left join users u on b.user_id = u.id where u.id is null);
+delete from comments where id in (select c.id from comments c left join posts p on c.post_id = p.id where p.id is null);
+delete from post_links where id in (select pl.id from post_links pl left join posts p on pl.post_id = p.id where p.id is null);
+delete from post_links where id in (select pl.id from post_links pl left join posts p on pl.related_post_id = p.id where p.id is null);
+delete from posts where id in (select p.id from posts p left join users u on p.owner_user_id = u.id where u.id is null);
+delete from votes where id in (select v.id from votes v left join posts p on v.post_id = p.id where p.id is null);
+
+alter table badges add foreign key (user_id) references users (id);
+alter table comments add foreign key (post_id) references posts (id);
+alter table comments add foreign key (user_id) references users (id);
+alter table post_links add foreign key (post_id) references posts (id);
+alter table post_links add foreign key (related_post_id) references posts (id);
+alter table posts add foreign key (accepted_answer_id) references posts (id);
+alter table posts add foreign key (parent_id) references posts (id);
+alter table posts add foreign key (owner_user_id) references users (id);
+alter table posts add foreign key (last_editor_user_id) references users (id);
+alter table tags add foreign key (excerpt_post_id) references posts (id);
+alter table tags add foreign key (wiki_post_id) references posts (id);
+alter table votes add foreign key (post_id) references posts (id);
+alter table votes add foreign key (user_id) references users (id);
