@@ -1,14 +1,32 @@
 package be.twofold.stackoverflow;
 
-import javax.xml.stream.*;
-import java.io.*;
-import java.nio.file.*;
-import java.sql.*;
-import java.time.*;
-import java.util.*;
-import java.util.regex.*;
-import java.util.stream.*;
-import java.util.zip.*;
+import be.twofold.stackoverflow.model.Column;
+import be.twofold.stackoverflow.model.Table;
+import be.twofold.stackoverflow.util.ProgressMonitor;
+
+import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLStreamException;
+import javax.xml.stream.XMLStreamReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Statement;
+import java.sql.Timestamp;
+import java.sql.Types;
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+import java.util.zip.GZIPInputStream;
 
 public final class SoImport {
 
@@ -119,34 +137,42 @@ public final class SoImport {
     // region SQL
 
     private static String createSql(Table table) {
-        String columns = table.columns().stream()
-            .map(column -> pgName(column.name()) + " " + getType(column) + (column.nullable() ? "" : " not null"))
+        String columns = table.getColumns().stream()
+            .map(column -> column.getPgName() + " " + getType(column) + (column.isNullable() ? "" : " not null"))
             .collect(Collectors.joining(", "));
 
-        return "create table if not exists " + pgName(table.name()) + " (" + columns + ");";
+        return "create table if not exists " + table.getPgName() + " (" + columns + ");";
     }
 
     private static String insertSql(Table table) {
-        String params = table.columns().stream()
-            .map(column -> pgName(column.name()))
+        String params = table.getColumns().stream()
+            .map(Column::getPgName)
             .collect(Collectors.joining(", "));
 
-        String values = IntStream.range(0, table.columns().size())
+        String values = IntStream.range(0, table.getColumns().size())
             .mapToObj(__ -> "?")
             .collect(Collectors.joining(", "));
 
-        return "insert into " + pgName(table.name()) + " (" + params + ") values (" + values + ");";
+        return "insert into " + table.getPgName() + " (" + params + ") values (" + values + ");";
     }
 
     private static String getType(Column column) {
-        return switch (column.type()) {
-            case Types.BOOLEAN -> "boolean";
-            case Types.INTEGER -> "int";
-            case Types.SMALLINT -> "smallint";
-            case Types.TIMESTAMP -> "timestamp";
-            case Types.VARCHAR -> column.length() != Integer.MAX_VALUE ? "varchar(" + column.length() + ")" : "text";
-            default -> throw new IllegalStateException("Unexpected value: " + column.type());
-        };
+        switch (column.getSqlType()) {
+            case Types.BOOLEAN:
+                return "boolean";
+            case Types.INTEGER:
+                return "int";
+            case Types.SMALLINT:
+                return "smallint";
+            case Types.TIMESTAMP:
+                return "timestamp";
+            case Types.VARCHAR:
+                return column.getLength() != Integer.MAX_VALUE
+                    ? "varchar(" + column.getLength() + ")"
+                    : "text";
+            default:
+                throw new IllegalStateException("Unexpected value: " + column.getSqlType());
+        }
     }
 
     // endregion
@@ -159,22 +185,31 @@ public final class SoImport {
     }
 
     private static PreparedStatementMapper mapper(int type, int index) {
-        return switch (type) {
-            case Types.BOOLEAN -> (stmt, value) -> stmt.setBoolean(index, parseBoolean(value));
-            case Types.INTEGER -> (stmt, value) -> stmt.setInt(index, Integer.parseInt(value));
-            case Types.SMALLINT -> (stmt, value) -> stmt.setShort(index, Short.parseShort(value));
-            case Types.TIMESTAMP -> (stmt, value) -> stmt.setTimestamp(index, parseTimestamp(value));
-            case Types.VARCHAR -> (stmt, value) -> stmt.setString(index, value);
-            default -> throw new IllegalStateException("Unexpected value: " + type);
-        };
+        switch (type) {
+            case Types.BOOLEAN:
+                return (stmt, value) -> stmt.setBoolean(index, parseBoolean(value));
+            case Types.INTEGER:
+                return (stmt, value) -> stmt.setInt(index, Integer.parseInt(value));
+            case Types.SMALLINT:
+                return (stmt, value) -> stmt.setShort(index, Short.parseShort(value));
+            case Types.TIMESTAMP:
+                return (stmt, value) -> stmt.setTimestamp(index, parseTimestamp(value));
+            case Types.VARCHAR:
+                return (stmt, value) -> stmt.setString(index, value);
+            default:
+                throw new IllegalStateException("Unexpected value: " + type);
+        }
     }
 
     private static boolean parseBoolean(String value) {
-        return switch (value) {
-            case "True" -> true;
-            case "False" -> false;
-            default -> throw new IllegalStateException("Unexpected value: " + value);
-        };
+        switch (value) {
+            case "True":
+                return true;
+            case "False":
+                return false;
+            default:
+                throw new IllegalStateException("Unexpected value: " + value);
+        }
     }
 
     private static Timestamp parseTimestamp(String value) {
@@ -190,7 +225,7 @@ public final class SoImport {
 
             for (Table table : Tables) {
                 create(conn, table);
-                insert(conn, table, root.resolve(table.name() + ".xml.gz"));
+                insert(conn, table, root.resolve(table.getName() + ".xml.gz"));
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
@@ -200,7 +235,7 @@ public final class SoImport {
     }
 
     private static void create(Connection conn, Table table) throws SQLException {
-        System.out.println("Creating table for '" + table.name() + "'");
+        System.out.println("Creating table for '" + table.getName() + "'");
 
         try (Statement stmt = conn.createStatement()) {
             String sql = createSql(table);
@@ -209,7 +244,7 @@ public final class SoImport {
     }
 
     private static void insert(Connection conn, Table table, Path path) throws IOException, SQLException, XMLStreamException {
-        System.out.println("Inserting table for '" + table.name() + "'");
+        System.out.println("Inserting table for '" + table.getName() + "'");
 
         try (InputStream input = new GZIPInputStream(Files.newInputStream(path));
              PreparedStatement stmt = conn.prepareStatement(insertSql(table))
@@ -249,10 +284,10 @@ public final class SoImport {
 
     private static Map<Integer, Integer> createNullables(Table table) {
         Map<Integer, Integer> nullables = new HashMap<>();
-        for (int i = 0; i < table.columns().size(); i++) {
-            Column column = table.columns().get(i);
-            if (column.nullable()) {
-                nullables.put(i + 1, column.type());
+        for (int i = 0; i < table.getColumns().size(); i++) {
+            Column column = table.getColumns().get(i);
+            if (column.isNullable()) {
+                nullables.put(i + 1, column.getSqlType());
             }
         }
         return Map.copyOf(nullables);
@@ -260,46 +295,11 @@ public final class SoImport {
 
     private static Map<String, PreparedStatementMapper> createMappers(Table table) {
         Map<String, PreparedStatementMapper> mappers = new HashMap<>();
-        for (int i = 0; i < table.columns().size(); i++) {
-            Column column = table.columns().get(i);
-            mappers.put(column.name(), mapper(column.type(), i + 1));
+        for (int i = 0; i < table.getColumns().size(); i++) {
+            Column column = table.getColumns().get(i);
+            mappers.put(column.getName(), mapper(column.getSqlType(), i + 1));
         }
         return Map.copyOf(mappers);
     }
-
-    // region Model
-
-    private static final Pattern CAMEL_CASE = Pattern.compile("([a-z])([A-Z])");
-
-    private static String pgName(String name) {
-        return CAMEL_CASE.matcher(name).replaceAll("$1_$2").toLowerCase(Locale.ROOT);
-    }
-
-    public record Table(String name, List<Column> columns) {
-        public Table(String name, List<Column> columns) {
-            this.name = Objects.requireNonNull(name);
-            this.columns = List.copyOf(columns);
-        }
-    }
-
-    public record Column(String name, int type, Integer length, boolean nullable) {
-        public Column {
-            Objects.requireNonNull(name);
-        }
-
-        public static Column fixed(String name, int type) {
-            return new Column(name, type, 0, false);
-        }
-
-        public static Column variable(String name, int type, int length) {
-            return new Column(name, type, length, false);
-        }
-
-        public Column withNulls() {
-            return new Column(name, type, length, true);
-        }
-    }
-
-    // endregion
 
 }

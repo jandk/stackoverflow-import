@@ -1,4 +1,4 @@
-package be.twofold.stackoverflow;
+package be.twofold.stackoverflow.util;
 
 public final class ProgressMonitor {
 
